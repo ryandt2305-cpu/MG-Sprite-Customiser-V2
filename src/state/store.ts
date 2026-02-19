@@ -1,0 +1,160 @@
+import type { GameData, SpriteDataResponse, CosmeticsResponse } from '../api/types';
+import { bus, Events } from '../utils/events';
+
+export interface Slot {
+  id: string;
+  type: 'sprite' | 'custom' | 'cosmetic';
+  spriteKey: string;
+  spriteUrl: string;
+  mutations: string[];
+  options: { icons: boolean; overlays: boolean };
+  customTint: { color: string; opacity: number };
+  position: { x: number; y: number };
+  scale: number;
+  rotation: number;
+  visible: boolean;
+  locked: boolean;
+  cosmeticLayers?: Record<string, string>;
+  // GIF animation data (not persisted)
+  gifFrames?: { canvas: HTMLCanvasElement; delay: number }[];
+  isAnimated?: boolean;
+  /** Transient: current frame index for animated preview (not persisted) */
+  _gifFrameIdx?: number;
+}
+
+export interface AppState {
+  gameData: GameData | null;
+  spriteData: SpriteDataResponse | null;
+  cosmeticsData: CosmeticsResponse | null;
+  gameVersion: string | null;
+
+  mode: 'sprites' | 'cosmetics';
+  slots: Slot[];
+  activeSlotIndex: number;
+  undoStack: Slot[][];
+  redoStack: Slot[][];
+
+  theme: 'light' | 'dark';
+  selectedCategory: string;
+  searchQuery: string;
+  previewZoom: number;
+}
+
+function createEmptySlot(index: number): Slot {
+  return {
+    id: `slot-${index}`,
+    type: 'sprite',
+    spriteKey: '',
+    spriteUrl: '',
+    mutations: [],
+    options: { icons: true, overlays: true },
+    customTint: { color: '#ffffff', opacity: 0 },
+    position: { x: 0, y: 0 },
+    scale: 1,
+    rotation: 0,
+    visible: true,
+    locked: false,
+  };
+}
+
+const MAX_SLOTS = 20;
+const MAX_UNDO = 50;
+
+export const state: AppState = {
+  gameData: null,
+  spriteData: null,
+  cosmeticsData: null,
+  gameVersion: null,
+
+  mode: 'sprites',
+  slots: Array.from({ length: MAX_SLOTS }, (_, i) => createEmptySlot(i)),
+  activeSlotIndex: 0,
+  undoStack: [],
+  redoStack: [],
+
+  theme: 'dark',
+  selectedCategory: 'plants',
+  searchQuery: '',
+  previewZoom: 1,
+};
+
+export function getActiveSlot(): Slot {
+  return state.slots[state.activeSlotIndex];
+}
+
+function pushUndo(): void {
+  state.undoStack.push(JSON.parse(JSON.stringify(state.slots)));
+  if (state.undoStack.length > MAX_UNDO) state.undoStack.shift();
+  state.redoStack = [];
+}
+
+export function undo(): void {
+  const prev = state.undoStack.pop();
+  if (!prev) return;
+  state.redoStack.push(JSON.parse(JSON.stringify(state.slots)));
+  state.slots = prev;
+  bus.emit(Events.SLOT_CHANGED, null);
+  bus.emit(Events.RENDER_REQUEST, null);
+}
+
+export function redo(): void {
+  const next = state.redoStack.pop();
+  if (!next) return;
+  state.undoStack.push(JSON.parse(JSON.stringify(state.slots)));
+  state.slots = next;
+  bus.emit(Events.SLOT_CHANGED, null);
+  bus.emit(Events.RENDER_REQUEST, null);
+}
+
+export function updateSlot(index: number, changes: Partial<Slot>): void {
+  pushUndo();
+  Object.assign(state.slots[index], changes);
+  bus.emit(Events.SLOT_CHANGED, index);
+  bus.emit(Events.RENDER_REQUEST, null);
+}
+
+/** Update slot without pushing undo — use with beginBatchUpdate/endBatchUpdate. */
+export function updateSlotSilent(index: number, changes: Partial<Slot>): void {
+  Object.assign(state.slots[index], changes);
+  bus.emit(Events.SLOT_CHANGED, index);
+  bus.emit(Events.RENDER_REQUEST, null);
+}
+
+let batchUndoPushed = false;
+let batchTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Begin a batch of rapid updates (e.g. slider drag). Pushes undo once at the start. */
+export function beginBatchUpdate(): void {
+  if (!batchUndoPushed) {
+    pushUndo();
+    batchUndoPushed = true;
+  }
+  if (batchTimer) clearTimeout(batchTimer);
+  batchTimer = setTimeout(() => { batchUndoPushed = false; }, 500);
+}
+
+export function setActiveSlot(index: number): void {
+  state.activeSlotIndex = index;
+  bus.emit(Events.SLOT_SELECTED, index);
+}
+
+export function reorderSlots(fromIndex: number, insertBefore: number): void {
+  if (fromIndex === insertBefore || fromIndex + 1 === insertBefore) return;
+  pushUndo();
+  const activeSlot = state.slots[state.activeSlotIndex];
+  const newSlots = [...state.slots];
+  const [moved] = newSlots.splice(fromIndex, 1);
+  const adjustedPos = insertBefore > fromIndex ? insertBefore - 1 : insertBefore;
+  newSlots.splice(adjustedPos, 0, moved);
+  state.slots = newSlots;
+  state.activeSlotIndex = newSlots.indexOf(activeSlot);
+  bus.emit(Events.SLOT_CHANGED, null);
+  bus.emit(Events.RENDER_REQUEST, null);
+}
+
+export function clearSlot(index: number): void {
+  pushUndo();
+  state.slots[index] = createEmptySlot(index);
+  bus.emit(Events.SLOT_CHANGED, index);
+  bus.emit(Events.RENDER_REQUEST, null);
+}
