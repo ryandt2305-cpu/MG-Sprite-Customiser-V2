@@ -15,6 +15,66 @@ import { renderThumb } from './thumbnail';
 import type { DropdownItem } from './custom-dropdown';
 import { spriteLoader } from '../api/sprite-loader';
 
+// ── Hit-test content bounds ──────────────────────────────────────────────────
+// Cache tight bounding boxes (content only, transparent padding stripped) so
+// the canvas hit-test uses a small region rather than the full canvas size.
+// Key = renderCache key (rendered path) or spriteUrl (pre-render fallback).
+// Value = { cx, cy, hw, hv } in source pixels; null = tainted / fully transparent.
+const hitBoundsCache = new Map<string, { cx: number; cy: number; hw: number; hv: number } | null>();
+
+/**
+ * Scan `source` for non-transparent pixels and return the tight content
+ * bounding box as { cx, cy, hw, hv } (centre + half-extents in source pixels).
+ * Uses a ≤128×128 downsample for speed. Returns null if the canvas is tainted
+ * or the source is entirely transparent.
+ */
+function scanContentBounds(
+  source: HTMLCanvasElement | HTMLImageElement,
+): { cx: number; cy: number; hw: number; hv: number } | null {
+  const srcW = source instanceof HTMLCanvasElement ? source.width : source.naturalWidth;
+  const srcH = source instanceof HTMLCanvasElement ? source.height : source.naturalHeight;
+  if (srcW === 0 || srcH === 0) return null;
+
+  const SCAN = 128;
+  const scanW = Math.min(srcW, SCAN);
+  const scanH = Math.min(srcH, SCAN);
+
+  const tmp = document.createElement('canvas');
+  tmp.width = scanW;
+  tmp.height = scanH;
+  const tmpCtx = tmp.getContext('2d')!;
+  tmpCtx.drawImage(source as CanvasImageSource, 0, 0, scanW, scanH);
+
+  let data: Uint8ClampedArray;
+  try {
+    data = tmpCtx.getImageData(0, 0, scanW, scanH).data;
+  } catch {
+    return null; // tainted canvas
+  }
+
+  let minX = scanW, minY = scanH, maxX = -1, maxY = -1;
+  for (let y = 0; y < scanH; y++) {
+    for (let x = 0; x < scanW; x++) {
+      if (data[(y * scanW + x) * 4 + 3] > 10) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  if (maxX < minX) return null; // fully transparent
+
+  const scaleX = srcW / scanW;
+  const scaleY = srcH / scanH;
+  const bx = Math.floor(minX * scaleX);
+  const by = Math.floor(minY * scaleY);
+  const bw = Math.ceil((maxX - minX + 1) * scaleX);
+  const bh = Math.ceil((maxY - minY + 1) * scaleY);
+  return { cx: bx + bw / 2, cy: by + bh / 2, hw: bw / 2, hv: bh / 2 };
+}
+
 export class App {
   private categoryDropdown!: CustomDropdown;
   private spriteDropdown!: CustomDropdown;
@@ -551,14 +611,22 @@ export class App {
     /**
      * Hit-test all visible slots (topmost first).
      *
-     * When the rendered canvas is available in renderCache (the common case after
-     * the first render), we do a bounding-box pre-filter followed by a single-pixel
-     * alpha read — so transparent padding in game sprites is correctly ignored.
-     * When the canvas isn't cached yet we fall back to a 128-px bounding box.
+     * Stage 1 — tight bounding-box pre-filter:
+     *   On first access, scanContentBounds() downsamples the rendered canvas to
+     *   ≤128×128 and finds the pixel-accurate content bounds (ignoring transparent
+     *   padding). The result is cached in hitBoundsCache. A 8-px margin is added so
+     *   the clickable region is slightly larger than the visible pixels.
+     *   Fallback: full canvas bounds (if the canvas is tainted or not yet scanned).
+     *
+     * Stage 2 — single-pixel alpha read:
+     *   Only fires for clicks that passed Stage 1. Catches SecurityError from tainted
+     *   canvases and accepts the hit (Stage 1 already proved we're inside the content
+     *   region in that case).
      */
     const hitTestSlot = (canvasX: number, canvasY: number): number | null => {
       const W = this.previewCanvas.width;
       const H = this.previewCanvas.height;
+      const MARGIN = 8; // canvas pixels added around content bounds
       for (let i = state.slots.length - 1; i >= 0; i--) {
         const slot = state.slots[i];
         if (!slot.visible || !slot.spriteUrl) continue;
@@ -578,21 +646,57 @@ export class App {
         const rendered = renderCache.get(cacheKey);
 
         if (rendered) {
-          // Fast bounding-box reject (avoids pixel read on misses)
-          const hw = (rendered.width / 2) * slot.scale;
-          const hh = (rendered.height / 2) * slot.scale;
-          if (Math.abs(localX) > hw || Math.abs(localY) > hh) continue;
-          // Pixel-accurate alpha check — ignores transparent padding in source PNGs
+          // Stage 1: tight content-bounds bounding box
+          let hb = hitBoundsCache.get(cacheKey);
+          if (hb === undefined) {
+            hb = scanContentBounds(rendered);
+            hitBoundsCache.set(cacheKey, hb);
+          }
+          if (hb) {
+            const dx = (hb.cx - rendered.width / 2) * slot.scale;
+            const dy = (hb.cy - rendered.height / 2) * slot.scale;
+            const chw = (hb.hw + MARGIN) * slot.scale;
+            const chv = (hb.hv + MARGIN) * slot.scale;
+            if (Math.abs(localX - dx) > chw || Math.abs(localY - dy) > chv) continue;
+          } else {
+            // Tainted or fully transparent — fall back to full canvas bounds
+            if (Math.abs(localX) > (rendered.width / 2) * slot.scale) continue;
+            if (Math.abs(localY) > (rendered.height / 2) * slot.scale) continue;
+          }
+
+          // Stage 2: pixel-accurate alpha check
           const px = Math.round(localX / slot.scale + rendered.width / 2);
           const py = Math.round(localY / slot.scale + rendered.height / 2);
           const ctx2d = rendered.getContext('2d');
-          if (ctx2d && ctx2d.getImageData(px, py, 1, 1).data[3] > 10) return i;
+          try {
+            if (ctx2d && ctx2d.getImageData(px, py, 1, 1).data[3] > 10) return i;
+          } catch {
+            // Tainted canvas — bounds check passed, accept the hit
+            return i;
+          }
         } else {
-          // Fallback: raw-image bounding box (used before first render)
+          // Pre-render fallback: scan the raw source image for content bounds
           const img = spriteLoader.getCached(slot.spriteUrl);
-          const hw = img ? (img.naturalWidth / 2) * slot.scale : 128 * slot.scale;
-          const hh = img ? (img.naturalHeight / 2) * slot.scale : 128 * slot.scale;
-          if (Math.abs(localX) <= hw && Math.abs(localY) <= hh) return i;
+          if (img) {
+            let hb = hitBoundsCache.get(slot.spriteUrl);
+            if (hb === undefined) {
+              hb = scanContentBounds(img);
+              hitBoundsCache.set(slot.spriteUrl, hb);
+            }
+            if (hb) {
+              const dx = (hb.cx - img.naturalWidth / 2) * slot.scale;
+              const dy = (hb.cy - img.naturalHeight / 2) * slot.scale;
+              const chw = (hb.hw + MARGIN) * slot.scale;
+              const chv = (hb.hv + MARGIN) * slot.scale;
+              if (Math.abs(localX - dx) <= chw && Math.abs(localY - dy) <= chv) return i;
+            } else {
+              const hw = (img.naturalWidth / 2) * slot.scale;
+              const hh = (img.naturalHeight / 2) * slot.scale;
+              if (Math.abs(localX) <= hw && Math.abs(localY) <= hh) return i;
+            }
+          } else {
+            if (Math.abs(localX) <= 128 * slot.scale && Math.abs(localY) <= 128 * slot.scale) return i;
+          }
         }
       }
       return null;
