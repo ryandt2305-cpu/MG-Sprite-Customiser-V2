@@ -639,8 +639,9 @@ export class App {
         const localX = relX * Math.cos(angle) - relY * Math.sin(angle);
         const localY = relX * Math.sin(angle) + relY * Math.cos(angle);
 
-        // Look up the already-rendered canvas (same key as canvas-renderer uses)
-        const gifIdx = slot.isAnimated && slot.gifFrames ? (slot._gifFrameIdx ?? 0) : 0;
+        // Look up the already-rendered canvas (same key as canvas-renderer uses).
+        // Non-animated slots use frameIdx -1 in renderSlot; animated use the current frame index.
+        const gifIdx = slot.isAnimated && slot.gifFrames ? (slot._gifFrameIdx ?? 0) : -1;
         const cacheKey = RenderCache.makeKey(slot.spriteUrl, slot.mutations, slot.options, slot.scale, slot.rotation)
           + `|${slot.customTint.color}:${slot.customTint.opacity}|f${gifIdx}`;
         const rendered = renderCache.get(cacheKey);
@@ -709,7 +710,8 @@ export class App {
       const canvasY = (e.clientY - rect.top) / cssScale;
 
       const hitIdx = hitTestSlot(canvasX, canvasY);
-      if (hitIdx !== null && hitIdx !== state.activeSlotIndex) {
+      if (hitIdx === null) return; // No sprite hit — don't start drag
+      if (hitIdx !== state.activeSlotIndex) {
         setActiveSlot(hitIdx);
       }
 
