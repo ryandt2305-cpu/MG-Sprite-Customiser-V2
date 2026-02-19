@@ -93,13 +93,50 @@ label {
   color: var(--muted);
   margin: 10px 0 6px;
 }
-select, input[type="text"], input[type="range"] {
+select, input[type="text"] {
   width: 100%;
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--input-bg);
   color: var(--ink);
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  padding: 0;
+  margin: 6px 0;
+  height: 4px;
+  border: none;
+  background: var(--border);
+  border-radius: 2px;
+  cursor: pointer;
+  color: var(--ink);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  margin-top: 0;
+}
+input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
 }
 option {
   background: var(--input-bg);
