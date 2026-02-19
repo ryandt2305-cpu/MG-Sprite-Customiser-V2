@@ -727,9 +727,11 @@ export class App {
 
     window.addEventListener('mousemove', (e) => {
       if (!isDragging) return;
+      const rect = this.previewCanvas.getBoundingClientRect();
+      const cssScale = rect.width / this.previewCanvas.width;
       const slot = getActiveSlot();
-      slot.position.x = slotStartX + (e.clientX - startX);
-      slot.position.y = slotStartY + (e.clientY - startY);
+      slot.position.x = slotStartX + (e.clientX - startX) / cssScale;
+      slot.position.y = slotStartY + (e.clientY - startY) / cssScale;
       this.render();
     });
 
