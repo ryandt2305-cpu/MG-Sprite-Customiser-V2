@@ -20,11 +20,9 @@ const CORS_PROXY = import.meta.env.VITE_CORS_PROXY ?? '';
  * Rewrite external URLs to a CORS-safe form.
  *
  * Dev:        route through Vite's proxy rules (/api → mg-api, /mggg-proxy → magicgarden.gg)
- * Production: mg-api.ariedam.fr serves images without CORS headers, so route through
- *             VITE_CORS_PROXY when set.  magicgarden.gg asset URLs are first normalised
- *             to mg-api.ariedam.fr before the proxy prefix is applied.
- *             Pattern: https://magicgarden.gg/version/<N>/assets/<path>
- *                   → https://mg-api.ariedam.fr/assets/<path>?v=<N>
+ * Production: neither mg-api.ariedam.fr nor magicgarden.gg serve images with CORS headers,
+ *             so both are routed through VITE_CORS_PROXY when set.
+ *             The proxy is called as: `${CORS_PROXY}${encodeURIComponent(originalUrl)}`
  */
 function proxyUrl(url: string): string {
   if (IS_DEV) {
@@ -37,21 +35,15 @@ function proxyUrl(url: string): string {
     return url;
   }
 
-  // Production: normalise magicgarden.gg → mg-api.ariedam.fr first
-  let resolved = url;
-  if (url.startsWith('https://magicgarden.gg/')) {
-    const match = url.match(/^https:\/\/magicgarden\.gg\/version\/([^/]+)\/assets\/(.+)$/);
-    if (match) {
-      resolved = `https://mg-api.ariedam.fr/assets/${match[2]}?v=${match[1]}`;
-    }
+  // Production: proxy both game asset domains directly (no URL rewriting)
+  if (
+    CORS_PROXY &&
+    (url.startsWith('https://mg-api.ariedam.fr/') || url.startsWith('https://magicgarden.gg/'))
+  ) {
+    return `${CORS_PROXY}${encodeURIComponent(url)}`;
   }
 
-  // Route mg-api image assets through the configured CORS proxy
-  if (CORS_PROXY && resolved.startsWith('https://mg-api.ariedam.fr/')) {
-    return `${CORS_PROXY}${encodeURIComponent(resolved)}`;
-  }
-
-  return resolved;
+  return url;
 }
 
 export class SpriteLoader {
